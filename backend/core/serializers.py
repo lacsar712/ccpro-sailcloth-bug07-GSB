@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from .models import ClothRoll, DipRun, Loft
@@ -38,6 +39,9 @@ class ClothRollSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("id", "loftName", "created_at", "updated_at")
+        # 关掉自动唯一组合校验：统一走下方 validate()，
+        # 让撞码错误挂在 rollCode 字段上，前端能直接提示到卷号输入框。
+        validators = []
 
     def validate(self, attrs):
         loft = attrs.get("loft") or getattr(self.instance, "loft", None)
@@ -46,10 +50,10 @@ class ClothRollSerializer(serializers.ModelSerializer):
             qs = ClothRoll.objects.filter(loft=loft, roll_code=roll_code)
             if self.instance:
                 qs = qs.exclude(pk=self.instance.pk)
-            if qs.exists() and self.instance is None:
-                pass
-            elif qs.exists():
-                raise serializers.ValidationError({"rollCode": "同一帆布间卷号必须唯一"})
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"rollCode": "同一帆布间卷号必须唯一"}
+                )
 
         new_status = attrs.get("status")
         if new_status == ClothRoll.STATUS_CURED:
@@ -65,15 +69,25 @@ class ClothRollSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        loft = validated_data.get("loft")
-        code = validated_data.get("roll_code")
-        existing = ClothRoll.objects.filter(loft=loft, roll_code=code).first()
-        if existing:
-            for key, val in validated_data.items():
-                setattr(existing, key, val)
-            existing.save()
-            return existing
-        return super().create(validated_data)
+        # 并发兜底：应用层校验与落库之间存在竞态，两名仓管同时建同码卷时，
+        # 数据库唯一约束只放行一笔，另一笔在此转为 400 而不是 500。
+        # atomic 包住写入：撞约束时回滚到保存点，不污染外层事务。
+        try:
+            with transaction.atomic():
+                return super().create(validated_data)
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"rollCode": "同一帆布间卷号必须唯一"}
+            )
+
+    def update(self, instance, validated_data):
+        try:
+            with transaction.atomic():
+                return super().update(instance, validated_data)
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"rollCode": "同一帆布间卷号必须唯一"}
+            )
 
 
 class DipRunSerializer(serializers.ModelSerializer):

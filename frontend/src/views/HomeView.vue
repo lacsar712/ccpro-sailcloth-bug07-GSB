@@ -46,7 +46,8 @@ async function wipeLoft() {
   if (!loft) return
   try {
     await api.delete(`/lofts/${loft.id}/`)
-    lofts.value = lofts.value.filter((x) => x.id !== loft.id)
+    // 间已连同布卷、浸渍记录一并删除，重新拉取架面与流水
+    await load()
   } catch {
     error.value = '删间失败'
   }

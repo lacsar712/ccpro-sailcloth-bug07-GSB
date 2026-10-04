@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Count
 from rest_framework import status as drf_status
 from rest_framework import viewsets
@@ -14,9 +15,11 @@ class LoftViewSet(viewsets.ModelViewSet):
     serializer_class = LoftSerializer
 
     def destroy(self, request, *args, **kwargs):
+        # 整间删除：间、布卷、浸渍记录在同一事务中级联删除，
+        # 任一步失败整体回滚，不留残卷。
         instance = self.get_object()
-        instance.notes = (instance.notes or "") + " [removed]"
-        instance.save(update_fields=["notes"])
+        with transaction.atomic():
+            instance.delete()
         return Response(status=drf_status.HTTP_204_NO_CONTENT)
 
 
