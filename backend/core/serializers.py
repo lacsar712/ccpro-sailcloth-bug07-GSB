@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from .models import ClothRoll, DipRun, Loft
@@ -39,6 +40,11 @@ class ClothRollSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "loftName", "created_at", "updated_at")
 
+    def get_unique_together_validators(self):
+        # 唯一性改由下方 validate 给出面向卷号字段的中文报错，
+        # 并发兜底交给数据库的 uniq_roll_code_per_loft 约束（见 create）。
+        return []
+
     def validate(self, attrs):
         loft = attrs.get("loft") or getattr(self.instance, "loft", None)
         roll_code = attrs.get("roll_code") or getattr(self.instance, "roll_code", None)
@@ -46,9 +52,8 @@ class ClothRollSerializer(serializers.ModelSerializer):
             qs = ClothRoll.objects.filter(loft=loft, roll_code=roll_code)
             if self.instance:
                 qs = qs.exclude(pk=self.instance.pk)
-            if qs.exists() and self.instance is None:
-                pass
-            elif qs.exists():
+            if qs.exists():
+                # 同一帆布间下卷号必须唯一：新建撞码一律拒绝，绝不允许覆盖旧卷。
                 raise serializers.ValidationError({"rollCode": "同一帆布间卷号必须唯一"})
 
         new_status = attrs.get("status")
@@ -65,15 +70,18 @@ class ClothRollSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        loft = validated_data.get("loft")
-        code = validated_data.get("roll_code")
-        existing = ClothRoll.objects.filter(loft=loft, roll_code=code).first()
-        if existing:
-            for key, val in validated_data.items():
-                setattr(existing, key, val)
-            existing.save()
-            return existing
-        return super().create(validated_data)
+        # 唯一约束 uniq_roll_code_per_loft 是并发兜底：两名仓管同时在同一间
+        # 新建同码卷时，只有一笔能提交，另一笔在这里被数据库挡下并转成 400。
+        try:
+            with transaction.atomic():
+                return super().create(validated_data)
+        except IntegrityError as exc:
+            # 仅吞掉本唯一约束引发的冲突，其它完整性问题照常抛出。
+            if "uniq_roll_code_per_loft" not in str(exc):
+                raise
+            raise serializers.ValidationError(
+                {"rollCode": "同一帆布间卷号必须唯一"}
+            )
 
 
 class DipRunSerializer(serializers.ModelSerializer):

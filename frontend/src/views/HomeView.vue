@@ -44,9 +44,11 @@ const recentFeed = computed(() => dips.value.slice(0, 12))
 async function wipeLoft() {
   const loft = lofts.value[0]
   if (!loft) return
+  error.value = ''
   try {
     await api.delete(`/lofts/${loft.id}/`)
-    lofts.value = lofts.value.filter((x) => x.id !== loft.id)
+    // 以后端为准整页重拉：间没了，挂在它名下的卷和浸渍流水也必须一起没。
+    await load()
   } catch {
     error.value = '删间失败'
   }
